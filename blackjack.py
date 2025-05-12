@@ -57,25 +57,13 @@ def get_player_key_for_strategy(card_names):
     """Determines the strategy lookup key (e.g., "16", "A,7", "8,8")."""
     num_cards = len(card_names)
     if num_cards == 0: return "" # Handle empty hand
+
     if num_cards == 1: # If only one card (e.g., after a split, before second card dealt)
         val = card_num_from_card_name(card_names[0])
         if val == 11: return "A" # Treat single Ace as "A"
         return str(val)       # Treat single numeric card as its value
 
     # Calculate values and string representations
-    card_vals = [card_num_from_card_name(name) for name in card_names]
-    # Sort numerically for pairs: Ace (11) > K,Q,J,T (10) > 9..2
-    # For soft totals, "A" should come first.
-    # Let's create two sorted lists for different purposes or refine one
-    
-    # For pair checking, numeric sort is fine.
-    # card_strs_for_pair_check = sorted([card_num_str_from_card_name(name) for name in card_names],
-    #                                   key=lambda x: (int(x) if x.isdigit() else 10 if x in ['10','J','Q','K'] else 11 if x=='A' else 0))
-
-    # For general strategy key formatting (A,X or total)
-    # Standard sort of card names (e.g. 'cA', 'dK') will keep aces first if 'a' is used.
-    # Let's use the card_names directly for calculating hand_value and ace count.
-
     hand_value = calculate_hand_value(card_names) # This already handles Aces correctly for total
     num_aces_in_hand = sum(1 for name in card_names if card_num_from_card_name(name) == 11)
 
@@ -83,6 +71,7 @@ def get_player_key_for_strategy(card_names):
     if num_cards == 2:
         val1_str = card_num_str_from_card_name(card_names[0])
         val2_str = card_num_str_from_card_name(card_names[1])
+
         # Ensure consistent order for pairs like "2,A" vs "A,2" -> should be "A,2"
         # Or for "2,2", "A,A"
         if val1_str == val2_str:
@@ -97,6 +86,7 @@ def get_player_key_for_strategy(card_names):
     # it means at least one Ace is counted as 11.
     if num_aces_in_hand > 0:
         sum_of_non_aces = sum(card_num_from_card_name(name) for name in card_names if card_num_from_card_name(name) != 11)
+
         # If hand_value is greater than sum_of_non_aces + total number of aces (counted as 1 each)
         # then at least one ace must be counted as 11.
         if hand_value > (sum_of_non_aces + num_aces_in_hand):
@@ -108,16 +98,15 @@ def get_player_key_for_strategy(card_names):
     # Also, pairs that are not "A,A" (like "8,8") will be handled by CHEAT_SHEET if an entry exists
     # otherwise they fall through to their sum (e.g. "8,8" -> "16" if no "8,8" entry)
     if num_cards == 2: # Specific handling for two cards that are not pairs and not soft.
-        c1_val = card_num_from_card_name(card_names[0])
-        c2_val = card_num_from_card_name(card_names[1])
         # Check if the pair is explicitly in CHEAT_SHEET (e.g., "2,2", "A,A")
         # This check is now more direct for pairs
         str_c1 = card_num_str_from_card_name(card_names[0])
         str_c2 = card_num_str_from_card_name(card_names[1])
 
         # For pairs like "2,2", "8,8" (A,A is already covered if soft A,A or hard 2/12)
-        if str_c1 == str_c2 : # This covers numeric pairs
+        if str_c1 == str_c2: # This covers numeric pairs
             return f"{str_c1},{str_c1}"
+
         # For A,X non-pair like A,7
         if str_c1 == "A": return f"A,{str_c2}"
         if str_c2 == "A": return f"A,{str_c1}"
@@ -370,7 +359,7 @@ class ProgramThread(QThread):
             for key in terminal_checks:
                  template = self.templates.get(key)
                  if template is None: continue
-                 match_loc, score = self.compare(template, current_screen_proc_gray, threshold=0.85) # Standard threshold, on 0.88 originally
+                 match_loc, score = self.compare(template, current_screen_proc_gray, threshold=0.80) # Lower threshold for better terminal state detection
                  if match_loc:
                      # Check Y coordinate to ensure it's likely player's result area
                      if match_loc[1] > WINDOW_HEIGHT / 2:
@@ -379,7 +368,17 @@ class ProgramThread(QThread):
                               highest_score = score
                               terminal_state_found = key
                               terminal_loc = match_loc # Store location if needed for context
-                              # print(f"Potential terminal: {key} at {match_loc} score {score:.3f}") # Debug
+                              print(f"{self.log_prefix}Detected terminal state: {key} at {match_loc} with score {score:.3f}") # Debug
+
+            # Also check for blackjack by looking at the cards (in case the terminal state detection misses it)
+            if not terminal_state_found and len(player_hands) > 0 and len(player_hands[active_hand_idx]) == 2:
+                # Check if player has blackjack (A + 10/J/Q/K)
+                current_hand = player_hands[active_hand_idx]
+                card_values = [card_num_from_card_name(card) for card in current_hand]
+                if (11 in card_values and 10 in card_values) and calculate_hand_value(current_hand) == 21:
+                    print(f"{self.log_prefix}Detected blackjack from cards: {current_hand}")
+                    terminal_state_found = "blackjack"
+                    # No need to set terminal_loc as it's not used for card-detected blackjack
 
             if terminal_state_found:
                  key = terminal_state_found
@@ -417,11 +416,35 @@ class ProgramThread(QThread):
             # 3c. Action Buttons (Player's Turn - if no terminal state and not round_over)
             # Find all available action buttons *first*
             action_buttons = {} # { 'hit': (loc), 'stand': (loc), ... }
-            for btn_name in ["hit", "stand", "double", "split"]:
+
+            # First detect stand, double, split with normal threshold
+            for btn_name in ["stand", "double", "split"]:
                 template = self.templates.get(btn_name)
                 if template is not None:
-                    loc, _ = self.compare(template, current_screen_proc_gray, threshold=0.80) # Lower threshold for buttons OK, originally on 0.85
-                    if loc: action_buttons[btn_name] = loc
+                    loc, score = self.compare(template, current_screen_proc_gray, threshold=0.75) # Lower threshold for better button detection
+                    if loc:
+                        action_buttons[btn_name] = loc
+                        print(f"{self.log_prefix}Detected {btn_name} button with score {score:.3f} at {loc}")
+
+            # If stand is found but hit is not, try to infer hit button position based on stand
+            if "stand" in action_buttons and "hit" not in action_buttons:
+                stand_x, stand_y = action_buttons["stand"]
+                # Hit button is typically to the left of stand button
+                # In GOP3, hit is usually about 250-260 pixels to the left of stand
+                hit_x = stand_x - 255  # Approximate position
+                hit_y = stand_y  # Same Y position
+
+                # Add inferred hit button
+                action_buttons["hit"] = (hit_x, hit_y)
+                print(f"{self.log_prefix}Inferred HIT button position at ({hit_x}, {hit_y}) based on STAND position")
+
+            # Try to detect hit button normally as well
+            template = self.templates.get("hit")
+            if template is not None:
+                loc, score = self.compare(template, current_screen_proc_gray, threshold=0.70) # Even lower threshold for hit
+                if loc:
+                    action_buttons["hit"] = loc
+                    print(f"{self.log_prefix}Detected hit button with score {score:.3f} at {loc}")
 
             # If Hit or Stand is visible, it's likely player's turn
             if "hit" in action_buttons or "stand" in action_buttons:
@@ -464,7 +487,7 @@ class ProgramThread(QThread):
                          center_x = np_mean(player_card_positions[:, 0])
                          hand0_cards = []
                          hand1_cards = []
-                         for name, x, y in all_player_cards_tuples:
+                         for name, x, _ in all_player_cards_tuples:  # Use _ for unused y coordinate
                               if x < center_x: hand0_cards.append(name)
                               else: hand1_cards.append(name)
                          player_hands[0] = hand0_cards
@@ -493,11 +516,21 @@ class ProgramThread(QThread):
                     player_key = get_player_key_for_strategy(current_hand_cards)
                     dealer_key = card_num_str_from_card_name(dealer_card)
                     if not player_key or not dealer_key:
-                         print(f"{self.log_prefix}Warning: Cannot determine strategy keys (P:'{player_key}', D:'{dealer_key}'). Defaulting to Stand.")
-                         strategy = "stand"
+                         print(f"{self.log_prefix}Warning: Cannot determine strategy keys (P:'{player_key}', D:'{dealer_key}'). Defaulting to Hit.")
+                         strategy = "hit"  # Changed default from stand to hit when keys can't be determined
                     else:
-                         strategy = CHEAT_SHEET.get((player_key, dealer_key), "stand") # Default stand
-                         # print(f"Lookup: ({player_key}, {dealer_key}) -> {strategy}") # Debug
+                         # Look up the strategy in the cheat sheet
+                         lookup_key = (player_key, dealer_key)
+                         if lookup_key in CHEAT_SHEET:
+                             strategy = CHEAT_SHEET[lookup_key]
+                             print(f"{self.log_prefix}Strategy found in cheat sheet: ({player_key}, {dealer_key}) -> {strategy}")
+                         else:
+                             # If not found in cheat sheet, use a reasonable default based on total
+                             strategy = "hit" if current_total_points < 17 else "stand"
+                             print(f"{self.log_prefix}No entry in cheat sheet for ({player_key}, {dealer_key}). Using default: {strategy}")
+
+                         # Log the decision for debugging
+                         print(f"{self.log_prefix}DECISION: Cards={current_hand_cards}, Total={current_total_points}, Player key={player_key}, Dealer key={dealer_key}, Strategy={strategy}")
 
                     # Validate strategy against available buttons
                     if strategy == "double" and ("double" not in action_buttons or len(current_hand_cards) != 2):
@@ -510,22 +543,50 @@ class ProgramThread(QThread):
                          if strategy == "split": strategy = "hit" # Avoid infinite loop if fallback is split again
 
 
+                # Handle missing buttons - try to enable debug screenshots
                 if strategy == "hit" and "hit" not in action_buttons:
-                    warning_msg = f"Warning: Strategy is HIT, but button not found. Forcing STAND. (Available: {list(action_buttons.keys())})"
+                    warning_msg = f"Warning: Strategy is HIT, but button not found. (Available: {list(action_buttons.keys())})"
                     print(f"{self.log_prefix}{warning_msg}")
                     self.statusUpdated.emit(self.game_id, "Warning: Hit not found")
-                    # ---- DEBUG Screenshot ----
-                    # ts = int(time())
-                    # debug_filename = f"debug_hit_not_found_{self.game_id}_{ts}.png"
-                    # print(f"{self.log_prefix}Saving debug screenshot to {debug_filename}")
-                    # # Save the processed grayscale image used for comparison
-                    # cv2.imwrite(debug_filename, current_screen_proc_gray)
-                    # ---- End Debug Screenshot ----
-                    strategy = "stand"
-                    if strategy == "stand" and "stand" not in action_buttons: # Can happen if busted/21 but buttons linger
-                        print(f"{self.log_prefix}Warning: Strategy is STAND, but button not found. Assuming hand ended.")
-                        # Let terminal state detection handle it next loop
-                        continue
+
+                    # Save debug screenshot to help diagnose the issue
+                    ts = int(time())
+                    debug_filename = f"debug_hit_not_found_{self.game_id}_{ts}.png"
+                    print(f"{self.log_prefix}Saving debug screenshot to {debug_filename}")
+                    # Save the processed grayscale image used for comparison
+                    from cv2 import imwrite
+                    imwrite(debug_filename, current_screen_proc_gray)
+
+                    # Try to wait a moment and retry detection
+                    print(f"{self.log_prefix}Waiting 0.5s and will retry button detection...")
+                    sleep(0.5)
+
+                    # Retry button detection with even lower threshold
+                    for btn_name in ["hit", "stand", "double", "split"]:
+                        if btn_name in action_buttons:
+                            continue  # Already found this button
+                        template = self.templates.get(btn_name)
+                        if template is not None:
+                            loc, score = self.compare(template, current_screen_proc_gray, threshold=0.70)  # Even lower threshold for retry
+                            if loc:
+                                action_buttons[btn_name] = loc
+                                print(f"{self.log_prefix}Retry detected {btn_name} button with score {score:.3f} at {loc}")
+
+                    # If still not found, use stand if available
+                    if "hit" not in action_buttons:
+                        if "stand" in action_buttons:
+                            print(f"{self.log_prefix}Still can't find HIT button. Using STAND instead.")
+                            strategy = "stand"
+                        else:
+                            print(f"{self.log_prefix}Warning: Neither HIT nor STAND buttons found. Assuming hand ended.")
+                            # Let terminal state detection handle it next loop
+                            continue
+
+                # Check if stand button is missing when needed
+                if strategy == "stand" and "stand" not in action_buttons:
+                    print(f"{self.log_prefix}Warning: Strategy is STAND, but button not found. Assuming hand ended.")
+                    # Let terminal state detection handle it next loop
+                    continue
 
                 # Emit current state info
                 self.roundInfoUpdated.emit(self.game_id, dealer_card, player_hands, active_hand_idx, strategy)
@@ -583,23 +644,63 @@ class ProgramThread(QThread):
             # 4. Idle or Unknown State
         if not action_taken_this_loop and not round_over:
             if current_time - last_action_time > ACTION_TIMEOUT:
-                 error_msg = f"Potential stall: No state change for {ACTION_TIMEOUT}s. Stopping."
-                 print(f"{self.log_prefix}{error_msg}")
-                 self.statusUpdated.emit(self.game_id, f"Error: {error_msg}")
-                 # ---- DEBUG Screenshot on Stall ----
-                #  ts = int(time())
-                #  stall_filename = f"debug_stall_{self.game_id}_{ts}.png"
-                #  print(f"{self.log_prefix}Saving stall screenshot to {stall_filename}")
-                #  cv2.imwrite(stall_filename, current_screen_proc) # Save color image
-                 # ---- End Debug Screenshot ----
-                 self.running = False
+                # Instead of stopping, try to recover by looking for the bet button
+                error_msg = f"Potential stall: No state change for {ACTION_TIMEOUT}s. Attempting recovery..."
+                print(f"{self.log_prefix}{error_msg}")
+                self.statusUpdated.emit(self.game_id, f"Recovering from stall...")
+
+                # Save debug screenshot
+                ts = int(time())
+                stall_filename = f"debug_stall_{self.game_id}_{ts}.png"
+                print(f"{self.log_prefix}Saving stall screenshot to {stall_filename}")
+                from cv2 import imwrite
+                imwrite(stall_filename, current_screen_proc_gray)
+
+                # Try to find bet button with lower threshold
+                bet_loc, _ = self.compare(self.templates.get("bet"), current_screen_proc_gray, threshold=0.75)
+                if bet_loc:
+                    print(f"{self.log_prefix}Recovery: Found bet button during stall. Clicking it to restart round.")
+                    self.perform_click_at_location(bet_loc, self.templates["bet"])
+                    # Reset round state
+                    player_hands = []
+                    active_hand_idx = 0
+                    is_doubled = [False] * 2
+                    dealer_card = ""
+                    round_profit = 0.0
+                    round_over = False
+                    last_action_time = current_time
+                    action_taken_this_loop = True
+                    # Don't use continue here, just let it proceed
+
+                # If we can't find bet button, try clicking in the center of the screen
+                else:
+                    print(f"{self.log_prefix}Recovery: Clicking center of screen to dismiss any dialogs...")
+                    center_x = WINDOW_WIDTH // 2
+                    center_y = WINDOW_HEIGHT // 2
+                    client_x, client_y = map_std_to_custom_coords(
+                        center_x, center_y, self.capture_rect, WINDOW_WIDTH, WINDOW_HEIGHT
+                    )
+                    click_in_window_client_coords(self.hwnd, client_x, client_y, duration_seconds=0.1)
+
+                # Reset the timer but don't stop the bot
+                last_action_time = current_time
+                # Only stop if we've had multiple consecutive stalls
+                if getattr(self, 'consecutive_stalls', 0) > 3:
+                    print(f"{self.log_prefix}Too many consecutive stalls. Stopping bot.")
+                    self.statusUpdated.emit(self.game_id, f"Error: Too many stalls")
+                    self.running = False
+                else:
+                    self.consecutive_stalls = getattr(self, 'consecutive_stalls', 0) + 1
+                    print(f"{self.log_prefix}Stall count: {self.consecutive_stalls}/3")
             else:
-               # Reduce logging noise for unknown state
-               if current_time - last_state_log_time > 2.0: # Log idle state only every 2s
+                # Reset stall counter if we're not stalled
+                self.consecutive_stalls = 0
+                # Reduce logging noise for unknown state
+                if current_time - last_state_log_time > 2.0: # Log idle state only every 2s
                     # print(f"{self.log_prefix}State: Waiting/Idle...")
                     self.statusUpdated.emit(self.game_id, "Idle")
                     last_state_log_time = current_time
-               sleep(IDLE_DELAY)
+                sleep(IDLE_DELAY)
 
             # Optional: Print loop duration for performance monitoring
             # loop_duration = time() - loop_start_time
