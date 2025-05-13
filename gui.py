@@ -4,7 +4,8 @@ from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QLineEdit,
     QPushButton, QListWidget, QListWidgetItem, QTableWidget, QTableWidgetItem,
     QComboBox, QMessageBox, QGraphicsView, QGraphicsScene, QDialog, QDialogButtonBox,
-    QHeaderView, QAbstractItemView, QTextEdit, QGraphicsPixmapItem, QSizePolicy, QMenu
+    QHeaderView, QAbstractItemView, QTextEdit, QGraphicsPixmapItem, QSizePolicy, QMenu,
+    QTabWidget, QMainWindow
 )
 from PyQt5.QtGui import QIntValidator, QCursor, QPixmap, QImage # Import QCursor, QPixmap, QImage
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject, QTimer # Import QObject, QTimer
@@ -22,6 +23,9 @@ from utils import (
     map_std_to_custom_coords # Keep for mapping calculation example if needed
 )
 import win32gui # For SetForegroundWindow
+
+# Import the web interface
+from web_interface_new import WebInterface
 
 # --- Global Listener Setup (same as before) ---
 class MouseSignalEmitter(QObject):
@@ -70,13 +74,44 @@ class InstructionDialog(QDialog):
          layout.addWidget(buttons)
 
 # --- Main App ---
-class App(QWidget):
+class MainApp(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Blackjack Bot - Multi-Mode Interface")
+        self.setGeometry(50, 50, 1600, 950)  # Adjusted size
+
+        # Create tab widget
+        self.tabs = QTabWidget()
+        self.setCentralWidget(self.tabs)
+
+        # Create multi-bot tab
+        self.multi_bot_tab = MultiInstanceTab()
+        self.tabs.addTab(self.multi_bot_tab, "Multi-Bot Mode")
+
+        # Create web interface tab
+        self.web_interface_tab = WebInterface()
+        self.tabs.addTab(self.web_interface_tab, "Single Bot Mode")
+
+        # Connect tab change signal
+        self.tabs.currentChanged.connect(self.handle_tab_change)
+
+    def handle_tab_change(self, _):
+        """Handles tab changes to update UI elements."""
+        # You can add specific actions when tabs are changed if needed
+        pass
+
+    def closeEvent(self, event):
+        """Handle application close event."""
+        # Stop all bots in multi-instance tab
+        self.multi_bot_tab.closeEvent(event)
+        event.accept()
+
+# --- Multi-Instance Tab ---
+class MultiInstanceTab(QWidget):
     # define_area_coords_signal = pyqtSignal(int, int, int, int) # Not needed, handled internally
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Blackjack Bot - Dynamic Multi-Instance v2")
-        self.setGeometry(50, 50, 1600, 950) # Adjusted size
 
         # --- Data Structures ---
         self.configured_bots = {} # {hwnd: {"title": title, "rect": (l,t,r,b)|None, "table_row": row_idx, "game_id": id|None, "status": "Idle", "preview_img": QPixmap|None}}
@@ -857,7 +892,7 @@ class App(QWidget):
         self.bots_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.bots_table.customContextMenuRequested.connect(self.show_context_menu)
 
-    def show_context_menu(self, pos):
+    def show_context_menu(self, _):
         """Shows the right-click menu for the selected table row."""
         selected_rows = self.bots_table.selectionModel().selectedRows()
         if not selected_rows:
@@ -1037,6 +1072,6 @@ if __name__ == '__main__':
     # logging.basicConfig(level=logging.DEBUG)
 
     app = QApplication(sys.argv)
-    window = App()
+    window = MainApp()
     window.show()
     sys.exit(app.exec_())

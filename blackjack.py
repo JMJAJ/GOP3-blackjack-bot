@@ -123,7 +123,7 @@ class ProgramThread(QThread):
     splitOccurred = pyqtSignal(int) # game_id
     handOutcome = pyqtSignal(int, int, str, float) # game_id, hand_index (0 or 1), result ("win", "lose", "bust", "draw", "blackjack"), profit_units
 
-    def __init__(self, hwnd, capture_rect, bet_amount_str_key, language, game_id):
+    def __init__(self, hwnd, capture_rect, bet_amount_str_key, language, game_id, is_web_view=False):
         super().__init__()
         self.hwnd = hwnd
         self.capture_rect = capture_rect
@@ -135,6 +135,15 @@ class ProgramThread(QThread):
         self.image_prefix = "image/" + self.language + "/"
         self.game_id = game_id
         self.log_prefix = f"[Bot {self.game_id} hwnd={self.hwnd}] "
+        self.is_web_view = is_web_view  # Flag to indicate if this is a web view
+
+        # For web view clicks, we need a reference to the QWebEngineView
+        # This will be set by the caller if is_web_view is True
+        self.web_view = None
+
+        # Store the main thread for thread-safe operations
+        from PyQt5.QtCore import QThread as QThreadClass
+        self.main_thread = QThreadClass.currentThread()
 
         self.statusUpdated.emit(self.game_id, "Initializing")
         print(f"{self.log_prefix}Pre-loading images...")
@@ -265,9 +274,55 @@ class ProgramThread(QThread):
         client_x, client_y = map_std_to_custom_coords(
             std_click_x, std_click_y, self.capture_rect, WINDOW_WIDTH, WINDOW_HEIGHT
         )
-        # print(f"{self.log_prefix}Clicking at detected location -> client({client_x}, {client_y})")
-        click_in_window_client_coords(self.hwnd, client_x, client_y, duration_seconds=0.1) # Faster click
-        return True
+
+        # Handle web view clicks differently
+        if self.is_web_view and self.web_view is not None:
+            try:
+                # For web view, we need to use Qt to simulate a mouse click
+                from PyQt5.QtCore import QPoint
+
+                # Get the actual size of the web view
+                web_view_width = self.web_view.width()
+                web_view_height = self.web_view.height()
+
+                # Calculate the scale factors between the standard processing size and the actual web view size
+                width_scale = web_view_width / WINDOW_WIDTH
+                height_scale = web_view_height / WINDOW_HEIGHT
+
+                # Scale the coordinates to match the actual web view size
+                web_x = int(std_click_x * width_scale)
+                web_y = int(std_click_y * height_scale)
+
+                print(f"{self.log_prefix}Web view click at ({web_x}, {web_y}) - Original: ({std_click_x}, {std_click_y})")
+
+                # Create a point for the click
+                click_point = QPoint(web_x, web_y)
+
+                # Use PyAutoGUI for direct mouse control
+                import pyautogui
+
+                # Get the global screen position
+                global_pos = self.web_view.mapToGlobal(click_point)
+                screen_x, screen_y = global_pos.x(), global_pos.y()
+
+                # Move mouse and click at the exact screen coordinates
+                pyautogui.moveTo(screen_x, screen_y)
+                pyautogui.click(screen_x, screen_y)
+
+                print(f"{self.log_prefix}PyAutoGUI click at screen position ({screen_x}, {screen_y})")
+
+                # Add a small delay after the click
+                sleep(0.2)
+
+                return True
+            except Exception as e:
+                print(f"{self.log_prefix}Error during web view click: {e}")
+                return False
+        else:
+            # Standard window click
+            # print(f"{self.log_prefix}Clicking at detected location -> client({client_x}, {client_y})")
+            click_in_window_client_coords(self.hwnd, client_x, client_y, duration_seconds=0.1) # Faster click
+            return True
 
     # --- Main Run Loop ---
     def run(self):
@@ -313,6 +368,10 @@ class ProgramThread(QThread):
             consecutive_capture_fails = 0 # Reset counter on success
 
             # 2. Preprocess Screen
+            # Ensure the captured image has the expected dimensions
+            if pil_screen.width != self.capture_rect[2] - self.capture_rect[0] or pil_screen.height != self.capture_rect[3] - self.capture_rect[1]:
+                print(f"{self.log_prefix}Note: Captured image size ({pil_screen.width}x{pil_screen.height}) differs from expected size ({self.capture_rect[2] - self.capture_rect[0]}x{self.capture_rect[3] - self.capture_rect[1]}). Using as is.")
+
             screen_cv_bgr = cvtColor(np_array(pil_screen), COLOR_RGB2BGR)
             current_screen_proc = resize(screen_cv_bgr, (WINDOW_WIDTH, WINDOW_HEIGHT))
             current_screen_proc_gray = cvtColor(current_screen_proc, COLOR_BGR2GRAY)

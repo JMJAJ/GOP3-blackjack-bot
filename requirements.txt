@@ -2,7 +2,9 @@ pyautogui
 pyscreeze
 opencv-python
 PyQt5
+PyQtWebEngine
 matplotlib
 numpy
 pywin32
 pynput
+pyinstaller

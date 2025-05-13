@@ -83,7 +83,8 @@ def capture_window_region_to_pil(hwnd, client_capture_rect):
             return None
 
         # Get the full window rectangle (screen coordinates) for PrintWindow target size
-        window_rect = win32gui.GetWindowRect(hwnd)
+        hwnd_int = int(hwnd) if not isinstance(hwnd, int) else hwnd
+        window_rect = win32gui.GetWindowRect(hwnd_int)
         window_width = window_rect[2] - window_rect[0]
         window_height = window_rect[3] - window_rect[1]
 
@@ -92,7 +93,8 @@ def capture_window_region_to_pil(hwnd, client_capture_rect):
              return None
 
         # Create compatible DCs and Bitmap for the *full window* size
-        hwnd_dc = win32gui.GetWindowDC(hwnd)
+        hwnd_int = int(hwnd) if not isinstance(hwnd, int) else hwnd
+        hwnd_dc = win32gui.GetWindowDC(hwnd_int)
         if not hwnd_dc: raise Exception("Failed to get Window DC")
         mfc_dc = win32ui.CreateDCFromHandle(hwnd_dc)
         save_dc = mfc_dc.CreateCompatibleDC()
@@ -102,10 +104,12 @@ def capture_window_region_to_pil(hwnd, client_capture_rect):
         save_dc.SelectObject(save_bitmap)
 
         # Use PrintWindow to capture the window content into save_dc
-        result = windll.user32.PrintWindow(hwnd, save_dc.GetSafeHdc(), 2) # Try flag 2 first
+        # Convert hwnd to int if it's not already
+        hwnd_int = int(hwnd) if not isinstance(hwnd, int) else hwnd
+        result = windll.user32.PrintWindow(hwnd_int, save_dc.GetSafeHdc(), 2) # Try flag 2 first
         if result == 0:
             # print(f"PrintWindow flag 2 failed for hwnd {hwnd}. Trying flag 0.")
-            result = windll.user32.PrintWindow(hwnd, save_dc.GetSafeHdc(), 0)
+            result = windll.user32.PrintWindow(hwnd_int, save_dc.GetSafeHdc(), 0)
             if result == 0:
                  raise Exception(f"PrintWindow failed for hwnd {hwnd} with both flag 2 and 0.")
 
@@ -118,10 +122,19 @@ def capture_window_region_to_pil(hwnd, client_capture_rect):
         )
 
         # --- Cleanup GDI objects ---
-        win32gui.DeleteObject(save_bitmap.GetHandle()); save_bitmap = None
-        save_dc.DeleteDC(); save_dc = None
-        mfc_dc.DeleteDC(); mfc_dc = None
-        win32gui.ReleaseDC(hwnd, hwnd_dc); hwnd_dc = None
+        if save_bitmap and hasattr(save_bitmap, 'GetHandle'):
+            win32gui.DeleteObject(save_bitmap.GetHandle())
+            save_bitmap = None
+        if save_dc and hasattr(save_dc, 'GetSafeHdc') and save_dc.GetSafeHdc():
+            save_dc.DeleteDC()
+            save_dc = None
+        if mfc_dc and hasattr(mfc_dc, 'GetSafeHdc') and mfc_dc.GetSafeHdc():
+            mfc_dc.DeleteDC()
+            mfc_dc = None
+        if hwnd_dc:
+            hwnd_int = int(hwnd) if not isinstance(hwnd, int) else hwnd
+            win32gui.ReleaseDC(hwnd_int, hwnd_dc)
+            hwnd_dc = None
         # --- End GDI Cleanup ---
 
         # --- Fix Crop Calculation ---
@@ -130,7 +143,8 @@ def capture_window_region_to_pil(hwnd, client_capture_rect):
 
         # Get client area top-left position relative to the screen
         try:
-            client_origin_screen_x, client_origin_screen_y = win32gui.ClientToScreen(hwnd, (0, 0))
+            hwnd_int = int(hwnd) if not isinstance(hwnd, int) else hwnd
+            client_origin_screen_x, client_origin_screen_y = win32gui.ClientToScreen(hwnd_int, (0, 0))
         except Exception as e:
              raise Exception(f"ClientToScreen failed for HWND {hwnd}: {e}") # Window might have closed
 
@@ -177,28 +191,56 @@ def capture_window_region_to_pil(hwnd, client_capture_rect):
 
         # Final check on cropped image size (sometimes PrintWindow captures slightly different dimensions)
         if cropped_im.width != capture_width or cropped_im.height != capture_height:
-             # This might be okay if difference is small (1-2 pixels), but log it.
+             # This might be okay if difference is small, but log it.
              print(f"Warning: Final cropped image size ({cropped_im.width}x{cropped_im.height}) differs slightly from requested region size ({capture_width}x{capture_height}).")
-             # If significantly different, it's an error
-             if abs(cropped_im.width - capture_width) > 5 or abs(cropped_im.height - capture_height) > 5:
-                 print("Error: Significant size mismatch after cropping.")
-                 return None # Treat as error
+             # If significantly different, resize the image to match the expected dimensions
+             if abs(cropped_im.width - capture_width) > 20 or abs(cropped_im.height - capture_height) > 20:
+                 print("Warning: Significant size mismatch after cropping. Resizing to match expected dimensions.")
+
+             # Resize the image to match the expected dimensions
+             cropped_im = cropped_im.resize((capture_width, capture_height), Image.LANCZOS)
 
         return cropped_im
 
     except Exception as e:
         print(f"Error during capture/crop for hwnd {hwnd}: {e}")
         # Ensure cleanup (redundant with earlier cleanup, but safe)
-        if save_bitmap and save_bitmap.GetSafeHandle(): win32gui.DeleteObject(save_bitmap.GetHandle())
-        if save_dc and save_dc.GetSafeHdc(): save_dc.DeleteDC()
-        if mfc_dc and mfc_dc.GetSafeHdc(): mfc_dc.DeleteDC()
-        if hwnd_dc: win32gui.ReleaseDC(hwnd, hwnd_dc)
+        try:
+            if save_bitmap and hasattr(save_bitmap, 'GetHandle'):
+                win32gui.DeleteObject(save_bitmap.GetHandle())
+            if save_dc and hasattr(save_dc, 'GetSafeHdc') and save_dc.GetSafeHdc():
+                save_dc.DeleteDC()
+            if mfc_dc and hasattr(mfc_dc, 'GetSafeHdc') and mfc_dc.GetSafeHdc():
+                mfc_dc.DeleteDC()
+            if hwnd_dc:
+                hwnd_int = int(hwnd) if not isinstance(hwnd, int) else hwnd
+                win32gui.ReleaseDC(hwnd_int, hwnd_dc)
+        except Exception as cleanup_error:
+            print(f"Error during cleanup for hwnd {hwnd}: {cleanup_error}")
         return None
     # No finally needed as cleanup happens within try/except
 
 # --- click_in_window_client_coords, map_std_to_custom_coords ---
 # ... (Keep these as they were) ...
-def click_in_window_client_coords(hwnd, x, y, button='left', duration_seconds=0.05):
+def click_in_window_client_coords(hwnd, x, y, button='left', duration_seconds=0.05, is_web_view=False):
+    """
+    Click at the specified client coordinates in a window.
+
+    Args:
+        hwnd: Window handle
+        x, y: Client coordinates to click
+        button: 'left' or 'right'
+        duration_seconds: Duration of the click
+        is_web_view: Set to True if clicking in a QWebEngineView
+    """
+    if is_web_view:
+        # For QWebEngineView, we need to use a different approach
+        # This is handled by the caller (usually in blackjack.py)
+        # Just log the click for debugging
+        print(f"Web view click at ({x}, {y}) with {button} button")
+        return
+
+    # Standard window click using PostMessage
     l_param = win32api.MAKELONG(x, y)
     win32api.PostMessage(hwnd, win32con.WM_MOUSEMOVE, 0, l_param)
     time.sleep(max(0.01, duration_seconds / 5))
